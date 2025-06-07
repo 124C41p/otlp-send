@@ -1,0 +1,30 @@
+[package]
+name = "otlp-send"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/124C41p/otlp-send"
+authors = ["Erik Friese"]
+
+[dependencies]
+anyhow = "1.0.98"
+clap = { version = "4.5.39", features = ["derive"] }
+either = "1.15.0"
+opentelemetry-proto = "0.30.0"
+prost = "0.13.5"
+reqwest = { version = "0.12.19", default-features = false, features = [
+    "rustls-tls",
+    "rustls-tls-manual-roots-no-provider",
+] }
+rustls = { version = "0.23.22", default-features = false }
+rustls-platform-verifier = "0.6.0"
+tokio = { version = "1.45.1", features = ["full"] }
+tonic = "0.13.1"
+wild = "2.2.1"
+zstd = "0.13.3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = true
