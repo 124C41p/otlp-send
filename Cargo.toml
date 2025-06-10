@@ -8,11 +8,10 @@ authors = ["Erik Friese"]
 
 [dependencies]
 anyhow = "1.0.98"
-clap = { version = "4.5.39", features = ["derive"] }
-either = "1.15.0"
+clap = { version = "4.5.40", features = ["derive"] }
 opentelemetry-proto = "0.30.0"
 prost = "0.13.5"
-reqwest = { version = "0.12.19", default-features = false, features = [
+reqwest = { version = "0.12.20", default-features = false, features = [
     "rustls-tls",
     "rustls-tls-manual-roots-no-provider",
 ] }

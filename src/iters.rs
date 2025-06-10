@@ -5,6 +5,7 @@ use std::{
     path::Path,
 };
 
+use anyhow::Result;
 use opentelemetry_proto::tonic::{logs::v1::LogsData, trace::v1::TracesData};
 use prost::Message;
 use zstd::stream::Decoder;
@@ -22,7 +23,7 @@ impl<T> ChunkIter<T>
 where
     T: Message + Default,
 {
-    pub fn new(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         Ok(ChunkIter {
             reader: Some(BufReader::new(File::open(path)?)),
             buf: Vec::new(),
@@ -30,7 +31,7 @@ where
         })
     }
 
-    fn _next(&mut self) -> anyhow::Result<Option<T>> {
+    fn _next(&mut self) -> Result<Option<T>> {
         let mut reader = self.reader.take().expect("reader must exist");
 
         let size = {
@@ -55,7 +56,7 @@ impl<T> Iterator for ChunkIter<T>
 where
     T: Message + Default,
 {
-    type Item = anyhow::Result<T>;
+    type Item = Result<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self._next().transpose()

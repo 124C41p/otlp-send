@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
-use either::Either::{Left, Right};
+use anyhow::{Result, anyhow};
 use opentelemetry_proto::tonic::{
     collector::{
         logs::v1::{
@@ -17,92 +16,80 @@ use opentelemetry_proto::tonic::{
     trace::v1::TracesData,
 };
 use prost::{Message, bytes::Bytes};
-use reqwest::{Url, header::CONTENT_TYPE};
+use reqwest::{IntoUrl, header::CONTENT_TYPE};
 use rustls_platform_verifier::BuilderVerifierExt;
 use tonic::transport::Channel;
 
-pub struct Sender(SenderTypes);
+#[derive(Clone)]
+pub struct Sender(SenderInner);
 
-enum SenderTypes {
+#[derive(Clone)]
+enum SenderInner {
     Grpc(GrpcSender),
     Http(HttpSender),
 }
 
 impl Sender {
-    pub async fn new_grpc(url: &str) -> anyhow::Result<Self> {
-        Ok(Self(SenderTypes::Grpc(GrpcSender::new(url).await?)))
+    pub async fn new_grpc(url: &str) -> Result<Self> {
+        Ok(Self(SenderInner::Grpc(GrpcSender::new(url).await?)))
     }
 
-    pub fn new_http(url: &str) -> anyhow::Result<Self> {
-        Ok(Self(SenderTypes::Http(HttpSender::new(url)?)))
+    pub fn new_http(url: &str) -> Result<Self> {
+        Ok(Self(SenderInner::Http(HttpSender::new(url)?)))
     }
 
-    pub fn send_logs(&self, logs: LogsData) -> impl Future<Output = anyhow::Result<()>> + 'static {
-        let future = match &self.0 {
-            SenderTypes::Grpc(grpc_sender) => Left(grpc_sender.send_logs(logs)),
-            SenderTypes::Http(http_sender) => Right(http_sender.send_logs(logs)),
-        };
-        async move {
-            future.await?;
-            Ok(())
+    pub async fn send_logs(&self, logs: LogsData) -> Result<()> {
+        match &self.0 {
+            SenderInner::Grpc(grpc_sender) => grpc_sender.send_logs(logs).await,
+            SenderInner::Http(http_sender) => http_sender.send_logs(logs).await,
         }
     }
 
-    pub fn send_traces(
-        &self,
-        traces: TracesData,
-    ) -> impl Future<Output = anyhow::Result<()>> + 'static {
-        let future = match &self.0 {
-            SenderTypes::Grpc(grpc_sender) => Left(grpc_sender.send_traces(traces)),
-            SenderTypes::Http(http_sender) => Right(http_sender.send_traces(traces)),
-        };
-        async move {
-            future.await?;
-            Ok(())
+    pub async fn send_traces(&self, traces: TracesData) -> Result<()> {
+        match &self.0 {
+            SenderInner::Grpc(grpc_sender) => grpc_sender.send_traces(traces).await,
+            SenderInner::Http(http_sender) => http_sender.send_traces(traces).await,
         }
     }
 }
 
+#[derive(Clone)]
 struct GrpcSender {
     channel: Channel,
 }
 
 impl GrpcSender {
-    async fn new(url: &str) -> anyhow::Result<Self> {
+    async fn new(url: &str) -> Result<Self> {
         Ok(Self {
             channel: Channel::builder(url.parse()?).connect().await?,
         })
     }
 
-    fn send_traces(
-        &self,
-        traces: TracesData,
-    ) -> impl Future<Output = anyhow::Result<()>> + 'static {
+    async fn send_traces(&self, traces: TracesData) -> Result<()> {
         let request = ExportTraceServiceRequest {
             resource_spans: traces.resource_spans,
         };
         let mut client = TraceServiceClient::new(self.channel.clone());
-        async move { handle_traces_response(client.export(request).await?.into_inner()) }
+        handle_traces_response(client.export(request).await?.into_inner())
     }
 
-    fn send_logs(&self, logs: LogsData) -> impl Future<Output = anyhow::Result<()>> + 'static {
+    async fn send_logs(&self, logs: LogsData) -> Result<()> {
         let request = ExportLogsServiceRequest {
             resource_logs: logs.resource_logs,
         };
         let mut client = LogsServiceClient::new(self.channel.clone());
-        async move { handle_logs_response(client.export(request).await?.into_inner()) }
+        handle_logs_response(client.export(request).await?.into_inner())
     }
 }
 
+#[derive(Clone)]
 struct HttpSender {
     client: reqwest::Client,
-    logs_url: Url,
-    traces_url: Url,
+    url: Arc<str>,
 }
 
 impl HttpSender {
-    fn new(url: &str) -> anyhow::Result<Self> {
-        let url = url.trim_end_matches("/");
+    fn new(url: &str) -> Result<Self> {
         Ok(Self {
             client: reqwest::Client::builder()
                 .use_preconfigured_tls(
@@ -114,62 +101,56 @@ impl HttpSender {
                     .with_no_client_auth(),
                 )
                 .build()?,
-            logs_url: Url::parse(&format!("{url}/v1/logs"))?,
-            traces_url: Url::parse(&format!("{url}/v1/traces"))?,
+            url: url.trim_end_matches("/").into(),
         })
     }
 
-    fn send_logs(&self, logs: LogsData) -> impl Future<Output = anyhow::Result<()>> + 'static {
-        let future = self.send_body(
-            self.logs_url.clone(),
-            (ExportLogsServiceRequest {
-                resource_logs: logs.resource_logs,
-            })
-            .encode_to_vec(),
-        );
+    async fn send_logs(&self, logs: LogsData) -> Result<()> {
+        let response = self
+            .send_body(
+                format!("{}/v1/logs", self.url),
+                (ExportLogsServiceRequest {
+                    resource_logs: logs.resource_logs,
+                })
+                .encode_to_vec(),
+            )
+            .await?;
 
-        async move { handle_logs_response(ExportLogsServiceResponse::decode(future.await?)?) }
+        handle_logs_response(ExportLogsServiceResponse::decode(response)?)
     }
 
-    fn send_traces(
-        &self,
-        traces: TracesData,
-    ) -> impl Future<Output = anyhow::Result<()>> + 'static {
-        let future = self.send_body(
-            self.traces_url.clone(),
-            (ExportTraceServiceRequest {
-                resource_spans: traces.resource_spans,
-            })
-            .encode_to_vec(),
-        );
+    async fn send_traces(&self, traces: TracesData) -> Result<()> {
+        let response = self
+            .send_body(
+                format!("{}/v1/traces", self.url),
+                (ExportTraceServiceRequest {
+                    resource_spans: traces.resource_spans,
+                })
+                .encode_to_vec(),
+            )
+            .await?;
 
-        async move { handle_traces_response(ExportTraceServiceResponse::decode(future.await?)?) }
+        handle_traces_response(ExportTraceServiceResponse::decode(response)?)
     }
 
-    fn send_body(
-        &self,
-        url: Url,
-        body: impl Into<reqwest::Body>,
-    ) -> impl Future<Output = anyhow::Result<Bytes>> + 'static {
-        let future = self
+    async fn send_body(&self, url: impl IntoUrl, body: impl Into<reqwest::Body>) -> Result<Bytes> {
+        let response = self
             .client
             .post(url)
             .header(CONTENT_TYPE, "application/x-protobuf")
             .body(body)
-            .send();
+            .send()
+            .await?;
 
-        async move {
-            let response = future.await?;
-            let status = response.status();
-            if !status.is_success() {
-                return Err(anyhow!("Server error {status}"));
-            }
-            Ok(response.bytes().await?)
+        let status = response.status();
+        if !status.is_success() {
+            return Err(anyhow!("Server error {status}"));
         }
+        Ok(response.bytes().await?)
     }
 }
 
-fn handle_logs_response(response: ExportLogsServiceResponse) -> anyhow::Result<()> {
+fn handle_logs_response(response: ExportLogsServiceResponse) -> Result<()> {
     if let Some(result) = response.partial_success {
         if result.rejected_log_records > 0 {
             return Err(anyhow!(
@@ -182,7 +163,7 @@ fn handle_logs_response(response: ExportLogsServiceResponse) -> anyhow::Result<(
     Ok(())
 }
 
-fn handle_traces_response(response: ExportTraceServiceResponse) -> anyhow::Result<()> {
+fn handle_traces_response(response: ExportTraceServiceResponse) -> Result<()> {
     if let Some(result) = response.partial_success {
         if result.rejected_spans > 0 {
             return Err(anyhow!(

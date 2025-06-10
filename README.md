@@ -1,6 +1,6 @@
 # otlp-send
 
-This is a simple command line tool which reads logs and traces from zstd-compressed protobuf-encoded files written by the [OpenTelemetry File Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/fileexporter), and send those to any OTLP-compatible server.
+This is a simple command line tool which reads logs and traces from zstd-compressed protobuf-encoded files written by the [OpenTelemetry File Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/fileexporter), and sends those to any OTLP-compatible server.
 
 ```
 Usage: otlp-send <SIGNAL_TYPE> <PROTOCOL> <URL> [FILES]...

@@ -23,24 +23,24 @@ async fn main() -> anyhow::Result<()> {
         SignalType::Logs => {
             for path in cli.files {
                 for logs in LogsIter::new(path)? {
-                    tasks.spawn(sender.send_logs(logs?));
+                    let sender = sender.clone();
+                    tasks.spawn(async move { sender.send_logs(logs?).await });
                 }
             }
         }
         SignalType::Traces => {
             for path in cli.files {
                 for traces in TracesIter::new(path)? {
-                    tasks.spawn(sender.send_traces(traces?));
+                    let sender = sender.clone();
+                    tasks.spawn(async move { sender.send_traces(traces?).await });
                 }
             }
         }
     }
 
-    tasks
-        .join_all()
-        .await
-        .into_iter()
-        .collect::<anyhow::Result<()>>()?;
+    while let Some(res) = tasks.join_next().await {
+        res??;
+    }
 
     Ok(())
 }
